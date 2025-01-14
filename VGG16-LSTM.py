@@ -1,24 +1,28 @@
 import streamlit as st
 from keras.models import load_model
 from keras.preprocessing.image import img_to_array, load_img
+from keras.applications.vgg16 import VGG16, preprocess_input
+from PIL import Image
 import numpy as np
 import pyttsx3
 import pickle
-import os
 
 # Load your custom-trained VGG16 + LSTM model and tokenizer
 @st.cache_resource
 def load_custom_captioning_model():
     # Load the trained VGG16 + LSTM model
-    model = load_model("my_model.keras.h5")
+    model = load_model("my_model.keras")
     
     # Load the tokenizer (assuming it's saved using pickle)
     with open("caption.pkl", "rb") as f:
         tokenizer = pickle.load(f)
     
-    return model, tokenizer
+    # Load VGG16 model for feature extraction
+    vgg16_model = VGG16(weights="imagenet", include_top=False, pooling="avg")
+    
+    return model, tokenizer, vgg16_model
 
-model, tokenizer = load_custom_captioning_model()
+model, tokenizer, vgg16_model = load_custom_captioning_model()
 
 # Function to preprocess image for VGG16
 def preprocess_image(image):
@@ -28,31 +32,33 @@ def preprocess_image(image):
     # Convert the image to an array
     image_array = img_to_array(image)
     
-    # Expand dimensions to match VGG16 input
+    # Add batch dimension and preprocess
     image_array = np.expand_dims(image_array, axis=0)
-    
-    # Normalize the image array
-    image_array = image_array / 255.0
+    image_array = preprocess_input(image_array)
     
     return image_array
 
+# Function to extract features using VGG16
+def extract_features(image):
+    image_array = preprocess_image(image)
+    features = vgg16_model.predict(image_array)
+    return features
+
 # Function to generate captions from an image
 def generate_caption(image):
-    image_array = preprocess_image(image)
+    # Extract features using VGG16
+    features = extract_features(image)
     
-    # Extract features using the VGG16 model (we assume the model uses this feature extractor)
-    features = model.predict(image_array)
+    # Initialize the caption sequence with the start token
+    caption_sequence = [tokenizer.word_index['<start>']]
     
-    # Initialize the caption sequence (start with the token for the start of the caption)
-    caption_sequence = [tokenizer.word_index['<start>']]  # Assuming '<start>' is the start token
-    
-    # Generate caption using the LSTM model (predict the next word iteratively)
-    for i in range(30):  # Limit to a maximum of 30 words
+    # Generate caption by iteratively predicting the next word
+    for _ in range(220):  # Maximum length of the caption
         # Convert the caption sequence into a padded sequence
         sequence = np.array(caption_sequence).reshape(1, -1)
         
-        # Predict the next word using the model (LSTM)
-        predicted_word_probs = model.predict([features, sequence])
+        # Predict the next word using the model
+        predicted_word_probs = model.predict([features, sequence])  # Pass both inputs
         
         # Get the index of the word with the highest probability
         predicted_word_index = np.argmax(predicted_word_probs)
@@ -60,15 +66,17 @@ def generate_caption(image):
         # Convert the index to a word
         predicted_word = tokenizer.index_word.get(predicted_word_index, '')
         
-        # Break if the end token is predicted
+        # Stop generating if the end token is predicted
         if predicted_word == '<end>':
             break
         
-        # Append the predicted word to the caption sequence
+        # Append the predicted word index to the caption sequence
         caption_sequence.append(predicted_word_index)
     
-    # Decode the caption sequence back to words
-    caption = ' '.join([word for word in caption_sequence if word not in [tokenizer.word_index['<start>'], tokenizer.word_index['<end>']]])
+    # Convert the caption sequence into a string
+    caption = ' '.join(
+        [tokenizer.index_word[word] for word in caption_sequence if word not in [tokenizer.word_index['<start>'], tokenizer.word_index['<end>']]]
+    )
     return caption
 
 # Function to convert text to WAV audio
@@ -78,7 +86,8 @@ def text_to_audio_wav(text, output_audio_path):
     engine.runAndWait()
 
 # Streamlit App
-st.title("Image Caption to WAV Audio")
+st.markdown('<h3 style="text-align: center;">Medical Image Caption Generation to Text & Audio </h3>', unsafe_allow_html=True)
+# st.title("Medical Image Caption to Text & Audio")
 
 # Image Upload
 uploaded_image = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
